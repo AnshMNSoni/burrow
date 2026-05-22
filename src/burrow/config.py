@@ -13,6 +13,8 @@ class Settings(BaseModel):
     project_root: Path = Field(default=Path("."))
     api_host: str = Field(default="127.0.0.1")
     api_port: int = Field(default=8000)
+    ollama_endpoint: str = Field(default="http://localhost:11434")
+    ollama_model: str = Field(default="qwen2.5-coder")
 
     @classmethod
     def load(cls) -> "Settings":

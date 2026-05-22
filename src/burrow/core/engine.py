@@ -131,7 +131,12 @@ class BurrowEngine:
 
         # 7. Compile AI suggestions
         logger.info(f"Querying reasoning intelligence (provider: {self.llm_provider})...")
-        recommendation = self.llm_client.analyze_error(error)
+        recommendation = self.llm_client.analyze_error(
+            error,
+            workspace_context=workspace_context,
+            symbol_graph_data=symbol_graph_data,
+            rca_result=rca_result
+        )
 
         logger.info("Traceback analysis sequence completed successfully.")
         return AnalysisResult(
