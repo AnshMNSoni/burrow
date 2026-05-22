@@ -35,6 +35,22 @@
       {
         "command": "burrow.clearDiagnostics",
         "title": "Burrow: Clear Diagnostics"
+      },
+      {
+        "command": "burrow.previewPatch",
+        "title": "Burrow: Preview Patch"
+      },
+      {
+        "command": "burrow.applyPatch",
+        "title": "Burrow: Apply Patch"
+      },
+      {
+        "command": "burrow.explainMore",
+        "title": "Burrow: Explain Last Analysis"
+      },
+      {
+        "command": "burrow.openFile",
+        "title": "Burrow: Open File"
       }
     ],
     "menus": {
@@ -47,6 +63,24 @@
         {
           "command": "burrow.analyzeFile",
           "group": "navigation"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "burrow-sidebar",
+          "title": "Burrow",
+          "icon": "$(bug)"
+        }
+      ]
+    },
+    "views": {
+      "burrow-sidebar": [
+        {
+          "id": "burrow.analysisView",
+          "name": "Burrow Ingest & Diagnostics",
+          "type": "tree"
         }
       ]
     },

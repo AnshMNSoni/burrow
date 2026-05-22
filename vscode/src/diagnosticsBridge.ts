@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
-import { StateManager } from './stateManager';
+import { StateManager, SharedState } from './stateManager';
+import { BurrowTreeView } from './treeView';
 
 // Define typed interfaces matching Pydantic backend models
 export interface NormalizedFrame {
@@ -87,10 +88,15 @@ export interface AnalysisResult {
 export class DiagnosticsBridge {
     private diagnosticCollection: vscode.DiagnosticCollection;
     private stateManager: StateManager;
+    private treeView?: BurrowTreeView;
 
     constructor(stateManager: StateManager) {
         this.stateManager = stateManager;
         this.diagnosticCollection = vscode.languages.createDiagnosticCollection('burrow');
+    }
+
+    public setTreeView(treeView: BurrowTreeView): void {
+        this.treeView = treeView;
     }
 
     /**
@@ -105,6 +111,10 @@ export class DiagnosticsBridge {
      */
     public updateDiagnostics(result: AnalysisResult): void {
         this.clear();
+        SharedState.lastAnalysisResult = result;
+        if (this.treeView) {
+            this.treeView.refresh();
+        }
 
         const workspaceRoot = this.stateManager.workspaceRoot;
         const fileDiagnosticsMap = new Map<string, vscode.Diagnostic[]>();

@@ -1,5 +1,9 @@
 import * as vscode from 'vscode';
 
+export class SharedState {
+    public static lastAnalysisResult: any = null;
+}
+
 export class StateManager {
     public get backendUrl(): string {
         return vscode.workspace.getConfiguration('burrow').get<string>('backendUrl') || 'http://localhost:8000';
