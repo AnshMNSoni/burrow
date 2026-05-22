@@ -11,7 +11,7 @@ from rich.syntax import Syntax
 from rich import box
 
 from burrow.config import settings
-from burrow.core.engine import BurrowEngine
+from burrow.core.engine import BurrowEngine, AnalysisResult
 from burrow.utils.logging import setup_logging, logger
 
 console = Console()
@@ -84,6 +84,161 @@ def print_error_stack(error, console, title_prefix=""):
             console.print(f"    {frame.raw_line}")
 
 
+def display_analysis_result(result: AnalysisResult):
+    """Renders the full traceback analysis report to the console."""
+    # Display Workspace Banner if workspace context is present
+    if result.workspace_context:
+        ws = result.workspace_context
+        fw_list = ", ".join(ws.structure.detected_frameworks) or "None detected"
+        branch_info = ""
+        changes_info = ""
+        if ws.git:
+            branch_info = f", Git Branch: [bold cyan]{ws.git.active_branch}[/]"
+            mod_count = sum(1 for c in ws.git.recent_changes if c.status in ("modified", "untracked", "added", "deleted"))
+            changes_info = f", Pending Changes: [bold red]{mod_count} files[/]"
+        
+        console.print(Panel(
+            f"[bold]Detected Frameworks:[/] {fw_list}{branch_info}{changes_info}",
+            title="[bold blue]Burrow Workspace Context[/]",
+            border_style="blue",
+            box=box.ROUNDED
+        ))
+
+    error = result.error
+    rec = result.recommendation
+
+    console.print()
+    # 1. Print Chained Exception Predecessors
+    for idx, chained in enumerate(error.chained_errors):
+        print_error_stack(chained, console, title_prefix=f"Chained Exception #{idx+1} (Cause) - ")
+        console.print("\n[bold yellow]----------------- [Propagation boundary] -----------------[/]\n")
+
+    # 2. Print Surfaced Error
+    surfaced_prefix = "Surfaced Exception - " if error.chained_errors else ""
+    print_error_stack(error, console, title_prefix=surfaced_prefix)
+
+    # Display Codebase Vulnerabilities & Warnings if present and relevant
+    if result.symbol_graph_data and result.symbol_graph_data.smells:
+        smells_text = []
+        for smell in result.symbol_graph_data.smells:
+            sev = f"[bold red]{smell.severity.upper()}[/]" if smell.severity.lower() == "error" else f"[bold yellow]{smell.severity.upper()}[/]"
+            smells_text.append(
+                f"• [{sev}] [bold]{smell.smell_type}[/]: {smell.message}\n"
+                f"  in [cyan]{smell.file_path}:{smell.line_number}[/]"
+            )
+        if smells_text:
+            console.print()
+            console.print(Panel(
+                "\n\n".join(smells_text),
+                title="[bold yellow]CODEBASE VULNERABILITIES & WARNINGS[/]",
+                border_style="yellow",
+                box=box.ROUNDED
+            ))
+
+    # Display Root Cause Ranked Hypotheses & Propagation Chain
+    if result.rca_result:
+        rca = result.rca_result
+        lines = []
+        if rca.propagation_chain:
+            lines.append("[bold cyan]Execution Propagation Chain:[/]")
+            chain_formatted = " -> ".join(f"[yellow]{step}[/]" for step in rca.propagation_chain)
+            lines.append(f"  {chain_formatted}\n")
+        
+        lines.append("[bold cyan]Ranked Hypotheses:[/]")
+        for idx, hyp in enumerate(rca.hypotheses):
+            conf_val = hyp.confidence_score * 100
+            c_color = "green" if conf_val >= 85 else "yellow" if conf_val >= 60 else "red"
+            
+            type_badge = f"[bold white on red] {hyp.type.upper()} [/]" if hyp.type in ("config_issue", "env_mismatch", "null_reference") else \
+                         f"[bold white on magenta] {hyp.type.upper()} [/]" if hyp.type in ("import_failure", "broken_reference") else \
+                         f"[bold black on yellow] {hyp.type.upper()} [/]" if hyp.type in ("bad_state_propagation", "api_mismatch") else \
+                         f"[bold black on green] {hyp.type.upper()} [/]" if hyp.type == "recent_change" else \
+                         f"[bold white on blue] {hyp.type.upper()} [/]" if hyp.type == "async_issue" else \
+                         f"[bold white on dim] {hyp.type.upper()} [/]"
+                         
+            origin = f"{hyp.origin_file}:{hyp.line_number}" if hyp.line_number else hyp.origin_file
+            
+            lines.append(
+                f"\n{idx+1}. {type_badge} [bold white]{hyp.root_cause}[/] "
+                f"([{c_color}]{conf_val:.0f}% confidence[/])\n"
+                f"   [bold]Origin File:[/] [cyan]{origin}[/]\n"
+                f"   [bold]Reasoning:[/] {hyp.reasoning_summary}\n"
+                f"   [bold]Safest Fix:[/] [green]{hyp.safest_fix_direction}[/]"
+            )
+            if hyp.probable_impacted_modules:
+                lines.append(f"   [bold]Impacted Modules:[/] {', '.join(hyp.probable_impacted_modules)}")
+        
+        console.print()
+        console.print(Panel(
+            "\n".join(lines),
+            title="[bold yellow]AI ROOT CAUSE RANKED HYPOTHESES[/]",
+            border_style="yellow",
+            box=box.ROUNDED
+        ))
+
+    # 3. Display AI Recommendation Panel
+    conf_color = "green" if rec.confidence > 0.8 else "yellow" if rec.confidence > 0.5 else "red"
+    console.print()
+    console.print(Panel(
+        f"[bold green]ANALYZED CAUSE[/]\n"
+        f"{rec.cause}\n\n"
+        f"[bold green]RECOMMENDED ACTION[/]\n"
+        f"{rec.remediation}\n\n"
+        f"[bold]Confidence Score:[/] [{conf_color}]{rec.confidence * 100:.1f}%[/]",
+        title="[bold yellow]AI Root Cause Remediation Plan[/]",
+        border_style="yellow",
+        box=box.ROUNDED
+    ))
+    console.print()
+
+    # 4. Display Fix Suggestions and Patch Previews (Stage 7)
+    if result.remediation_result and result.remediation_result.suggestions:
+        rem_lines = []
+        for idx, sug in enumerate(result.remediation_result.suggestions):
+            risk_val = sug.risk_level.lower()
+            if risk_val == "safe":
+                risk_badge = "[bold black on green] SAFE [/]"
+            elif risk_val == "medium":
+                risk_badge = "[bold black on yellow] MEDIUM [/]"
+            else:
+                risk_badge = "[bold white on red] RISKY [/]"
+            
+            rem_lines.append(
+                f"[bold yellow]Suggestion #{idx+1} {risk_badge}[/]\n"
+                f"  [bold]Fix Description:[/] [white]{sug.description}[/]\n"
+                f"  [bold]Affected File:[/] [cyan]{sug.affected_file}[/]"
+            )
+            if sug.likely_edit_region:
+                rem_lines.append(f"  [bold]Likely Edit Region:[/] {sug.likely_edit_region}")
+            
+            rem_lines.append(
+                f"  [bold]Why it helps:[/] {sug.rationale}"
+            )
+            
+            if sug.patch_preview:
+                rem_lines.append("  [bold]Patch Preview:[/]")
+                preview_lines = sug.patch_preview.split("\n")
+                formatted_preview = []
+                for line in preview_lines:
+                    if line.startswith("+"):
+                        formatted_preview.append(f"    [green]{line}[/]")
+                    elif line.startswith("-"):
+                        formatted_preview.append(f"    [red]{line}[/]")
+                    else:
+                        formatted_preview.append(f"    [dim]{line}[/]")
+                rem_lines.append("\n".join(formatted_preview))
+            
+            rem_lines.append("")
+            
+        console.print(Panel(
+            "\n".join(rem_lines).rstrip(),
+            title="[bold green]RECOMMENDED REMEDIATION & PATCH SUGGESTIONS[/]",
+            border_style="green",
+            box=box.ROUNDED
+        ))
+        console.print()
+
+
 def handle_analyze(args):
     """Processes traceback, resolves source contexts, builds graph and renders suggestions."""
     try:
@@ -96,157 +251,7 @@ def handle_analyze(args):
             print(result.model_dump_json(indent=2))
             return
 
-        # Display Workspace Banner if workspace context is present
-        if result.workspace_context:
-            ws = result.workspace_context
-            fw_list = ", ".join(ws.structure.detected_frameworks) or "None detected"
-            branch_info = ""
-            changes_info = ""
-            if ws.git:
-                branch_info = f", Git Branch: [bold cyan]{ws.git.active_branch}[/]"
-                mod_count = sum(1 for c in ws.git.recent_changes if c.status in ("modified", "untracked", "added", "deleted"))
-                changes_info = f", Pending Changes: [bold red]{mod_count} files[/]"
-            
-            console.print(Panel(
-                f"[bold]Detected Frameworks:[/] {fw_list}{branch_info}{changes_info}",
-                title="[bold blue]Burrow Workspace Context[/]",
-                border_style="blue",
-                box=box.ROUNDED
-            ))
-
-        error = result.error
-        rec = result.recommendation
-
-        console.print()
-        # 1. Print Chained Exception Predecessors
-        for idx, chained in enumerate(error.chained_errors):
-            print_error_stack(chained, console, title_prefix=f"Chained Exception #{idx+1} (Cause) - ")
-            console.print("\n[bold yellow]----------------- [Propagation boundary] -----------------[/]\n")
-
-        # 2. Print Surfaced Error
-        surfaced_prefix = "Surfaced Exception - " if error.chained_errors else ""
-        print_error_stack(error, console, title_prefix=surfaced_prefix)
-
-        # Display Codebase Vulnerabilities & Warnings if present and relevant
-        if result.symbol_graph_data and result.symbol_graph_data.smells:
-            smells_text = []
-            for smell in result.symbol_graph_data.smells:
-                sev = f"[bold red]{smell.severity.upper()}[/]" if smell.severity.lower() == "error" else f"[bold yellow]{smell.severity.upper()}[/]"
-                smells_text.append(
-                    f"• [{sev}] [bold]{smell.smell_type}[/]: {smell.message}\n"
-                    f"  in [cyan]{smell.file_path}:{smell.line_number}[/]"
-                )
-            if smells_text:
-                console.print()
-                console.print(Panel(
-                    "\n\n".join(smells_text),
-                    title="[bold yellow]CODEBASE VULNERABILITIES & WARNINGS[/]",
-                    border_style="yellow",
-                    box=box.ROUNDED
-                ))
-
-        # Display Root Cause Ranked Hypotheses & Propagation Chain
-        if result.rca_result:
-            rca = result.rca_result
-            lines = []
-            if rca.propagation_chain:
-                lines.append("[bold cyan]Execution Propagation Chain:[/]")
-                chain_formatted = " -> ".join(f"[yellow]{step}[/]" for step in rca.propagation_chain)
-                lines.append(f"  {chain_formatted}\n")
-            
-            lines.append("[bold cyan]Ranked Hypotheses:[/]")
-            for idx, hyp in enumerate(rca.hypotheses):
-                conf_val = hyp.confidence_score * 100
-                c_color = "green" if conf_val >= 85 else "yellow" if conf_val >= 60 else "red"
-                
-                type_badge = f"[bold white on red] {hyp.type.upper()} [/]" if hyp.type in ("config_issue", "env_mismatch", "null_reference") else \
-                             f"[bold white on magenta] {hyp.type.upper()} [/]" if hyp.type in ("import_failure", "broken_reference") else \
-                             f"[bold black on yellow] {hyp.type.upper()} [/]" if hyp.type in ("bad_state_propagation", "api_mismatch") else \
-                             f"[bold black on green] {hyp.type.upper()} [/]" if hyp.type == "recent_change" else \
-                             f"[bold white on blue] {hyp.type.upper()} [/]" if hyp.type == "async_issue" else \
-                             f"[bold white on dim] {hyp.type.upper()} [/]"
-                             
-                origin = f"{hyp.origin_file}:{hyp.line_number}" if hyp.line_number else hyp.origin_file
-                
-                lines.append(
-                    f"\n{idx+1}. {type_badge} [bold white]{hyp.root_cause}[/] "
-                    f"([{c_color}]{conf_val:.0f}% confidence[/])\n"
-                    f"   [bold]Origin File:[/] [cyan]{origin}[/]\n"
-                    f"   [bold]Reasoning:[/] {hyp.reasoning_summary}\n"
-                    f"   [bold]Safest Fix:[/] [green]{hyp.safest_fix_direction}[/]"
-                )
-                if hyp.probable_impacted_modules:
-                    lines.append(f"   [bold]Impacted Modules:[/] {', '.join(hyp.probable_impacted_modules)}")
-            
-            console.print()
-            console.print(Panel(
-                "\n".join(lines),
-                title="[bold yellow]AI ROOT CAUSE RANKED HYPOTHESES[/]",
-                border_style="yellow",
-                box=box.ROUNDED
-            ))
-
-        # 3. Display AI Recommendation Panel
-        conf_color = "green" if rec.confidence > 0.8 else "yellow" if rec.confidence > 0.5 else "red"
-        console.print()
-        console.print(Panel(
-            f"[bold green]ANALYZED CAUSE[/]\n"
-            f"{rec.cause}\n\n"
-            f"[bold green]RECOMMENDED ACTION[/]\n"
-            f"{rec.remediation}\n\n"
-            f"[bold]Confidence Score:[/] [{conf_color}]{rec.confidence * 100:.1f}%[/]",
-            title="[bold yellow]AI Root Cause Remediation Plan[/]",
-            border_style="yellow",
-            box=box.ROUNDED
-        ))
-        console.print()
-
-        # 4. Display Fix Suggestions and Patch Previews (Stage 7)
-        if result.remediation_result and result.remediation_result.suggestions:
-            rem_lines = []
-            for idx, sug in enumerate(result.remediation_result.suggestions):
-                risk_val = sug.risk_level.lower()
-                if risk_val == "safe":
-                    risk_badge = "[bold black on green] SAFE [/]"
-                elif risk_val == "medium":
-                    risk_badge = "[bold black on yellow] MEDIUM [/]"
-                else:
-                    risk_badge = "[bold white on red] RISKY [/]"
-                
-                rem_lines.append(
-                    f"[bold yellow]Suggestion #{idx+1} {risk_badge}[/]\n"
-                    f"  [bold]Fix Description:[/] [white]{sug.description}[/]\n"
-                    f"  [bold]Affected File:[/] [cyan]{sug.affected_file}[/]"
-                )
-                if sug.likely_edit_region:
-                    rem_lines.append(f"  [bold]Likely Edit Region:[/] {sug.likely_edit_region}")
-                
-                rem_lines.append(
-                    f"  [bold]Why it helps:[/] {sug.rationale}"
-                )
-                
-                if sug.patch_preview:
-                    rem_lines.append("  [bold]Patch Preview:[/]")
-                    preview_lines = sug.patch_preview.split("\n")
-                    formatted_preview = []
-                    for line in preview_lines:
-                        if line.startswith("+"):
-                            formatted_preview.append(f"    [green]{line}[/]")
-                        elif line.startswith("-"):
-                            formatted_preview.append(f"    [red]{line}[/]")
-                        else:
-                            formatted_preview.append(f"    [dim]{line}[/]")
-                    rem_lines.append("\n".join(formatted_preview))
-                
-                rem_lines.append("")
-                
-            console.print(Panel(
-                "\n".join(rem_lines).rstrip(),
-                title="[bold green]RECOMMENDED REMEDIATION & PATCH SUGGESTIONS[/]",
-                border_style="green",
-                box=box.ROUNDED
-            ))
-            console.print()
+        display_analysis_result(result)
 
     except Exception as e:
         error_console.print(f"[bold red]Error:[/] {e}")
@@ -331,6 +336,40 @@ def handle_check(args):
         sys.exit(1)
 
 
+def handle_run(args):
+    """Executes a command inside a SubprocessWatcher and routes events to the EventBus."""
+    try:
+        setup_logging(args.log_level, log_format="console")
+        from burrow.runtime.bus import EventBus
+        from burrow.runtime.watcher import SubprocessWatcher
+        
+        engine = BurrowEngine(project_root=args.project_root, llm_provider=args.llm_provider)
+        bus = EventBus(engine)
+        watcher = SubprocessWatcher(bus, command=args.run_command, source=args.source)
+        
+        exit_code = watcher.run()
+        sys.exit(exit_code)
+    except Exception as e:
+        error_console.print(f"[bold red]Error:[/] {e}")
+        sys.exit(1)
+
+
+def handle_watch(args):
+    """Watches piped stdout/logs and routes them to the EventBus."""
+    try:
+        setup_logging(args.log_level, log_format="console")
+        from burrow.runtime.bus import EventBus
+        from burrow.runtime.watcher import StdinWatcher
+        
+        engine = BurrowEngine(project_root=args.project_root, llm_provider=args.llm_provider)
+        bus = EventBus(engine)
+        watcher = StdinWatcher(bus, source=args.source)
+        watcher.watch()
+    except Exception as e:
+        error_console.print(f"[bold red]Error:[/] {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="burrow",
@@ -367,6 +406,17 @@ def main():
     api_parser.add_argument("--port", type=int, default=settings.api_port, help="Bind Host Port Number")
     api_parser.add_argument("--reload", action="store_true", help="Start server in live-reload mode")
     api_parser.set_defaults(func=handle_api)
+
+    # run subcommand
+    run_parser = subparsers.add_parser("run", help="Run a command and monitor it for failure/tracebacks")
+    run_parser.add_argument("run_command", help="Command to execute inside watcher")
+    run_parser.add_argument("--source", default="generic", help="Source type of output logs (e.g. python, pytest, npm, docker)")
+    run_parser.set_defaults(func=handle_run)
+
+    # watch subcommand
+    watch_parser = subparsers.add_parser("watch", help="Watch standard input stream for tracebacks and failures")
+    watch_parser.add_argument("--source", default="generic", help="Source type of output logs (e.g. python, pytest, npm, docker)")
+    watch_parser.set_defaults(func=handle_watch)
 
     args = parser.parse_args()
     args.func(args)
