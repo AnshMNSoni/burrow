@@ -24,7 +24,6 @@ export async function activate(context: vscode.ExtensionContext) {
     const treeView = new BurrowTreeView();
     diagnosticsBridge.setTreeView(treeView);
     
-    const terminalWatcher = new TerminalWatcher(backendConnector, diagnosticsBridge);
     const commandHandlers = new CommandHandlers(backendConnector, diagnosticsBridge, stateManager);
 
     // Instantiate and register Patch Provider
@@ -71,21 +70,38 @@ export async function activate(context: vscode.ExtensionContext) {
     // Add to subscriptions
     context.subscriptions.push(backendConnector);
     context.subscriptions.push(diagnosticsBridge);
-    context.subscriptions.push(terminalWatcher);
     context.subscriptions.push(patchRegistration);
     context.subscriptions.push(hoverRegistration);
     context.subscriptions.push(codeActionsRegistration);
     context.subscriptions.push(treeViewRegistration);
     commands.forEach(cmd => context.subscriptions.push(cmd));
 
-    // Initialize terminal watching
-    terminalWatcher.start();
+    // Only start terminal watcher when a workspace is actually open
+    const workspaceFolders = vscode.workspace.workspaceFolders;
+    if (workspaceFolders && workspaceFolders.length > 0) {
+        const terminalWatcher = new TerminalWatcher(backendConnector, diagnosticsBridge);
+        terminalWatcher.start();
+        context.subscriptions.push(terminalWatcher);
+    }
 
-    // Check if backend autostart is enabled
+    // Re-initialize terminal watcher if workspace folders change
+    const workspaceChangeDisposable = vscode.workspace.onDidChangeWorkspaceFolders((event) => {
+        if (event.added.length > 0) {
+            const terminalWatcher = new TerminalWatcher(backendConnector, diagnosticsBridge);
+            terminalWatcher.start();
+            context.subscriptions.push(terminalWatcher);
+            console.log('Burrow: workspace folders changed — terminal watcher restarted.');
+        }
+    });
+    context.subscriptions.push(workspaceChangeDisposable);
+
+    // Defer backend auto-start by 2000ms to avoid blocking editor startup UI thread
     if (stateManager.autoStartBackend) {
-        backendConnector.startBackend().catch((err) => {
-            console.error('Burrow backend auto-start failed:', err);
-        });
+        setTimeout(() => {
+            backendConnector.startBackend().catch((err: Error) => {
+                console.error('Burrow backend auto-start failed:', err);
+            });
+        }, 2000);
     }
 }
 
