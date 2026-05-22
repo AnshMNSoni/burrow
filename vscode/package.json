@@ -4,6 +4,11 @@
   "description": "Local-first AI debugging intelligence extension",
   "version": "0.1.0",
   "publisher": "ansh",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AnshMNSoni/burrow"
+  },
+  "license": "MIT",
   "engines": {
     "vscode": "^1.89.0"
   },
@@ -134,11 +139,13 @@
   "devDependencies": {
     "@types/node": "^20.11.0",
     "@types/vscode": "^1.89.0",
+    "@vscode/vsce": "^2.30.0",
     "typescript": "^5.3.3"
   },
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -watch -p ./",
-    "test": "npm run compile && node out/test/runTests.js"
+    "test": "npm run compile && node out/test/runTests.js",
+    "package": "vsce package"
   }
 }
