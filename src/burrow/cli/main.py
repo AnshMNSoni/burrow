@@ -145,6 +145,47 @@ def handle_analyze(args):
                     box=box.ROUNDED
                 ))
 
+        # Display Root Cause Ranked Hypotheses & Propagation Chain
+        if result.rca_result:
+            rca = result.rca_result
+            lines = []
+            if rca.propagation_chain:
+                lines.append("[bold cyan]Execution Propagation Chain:[/]")
+                chain_formatted = " -> ".join(f"[yellow]{step}[/]" for step in rca.propagation_chain)
+                lines.append(f"  {chain_formatted}\n")
+            
+            lines.append("[bold cyan]Ranked Hypotheses:[/]")
+            for idx, hyp in enumerate(rca.hypotheses):
+                conf_val = hyp.confidence_score * 100
+                c_color = "green" if conf_val >= 85 else "yellow" if conf_val >= 60 else "red"
+                
+                type_badge = f"[bold white on red] {hyp.type.upper()} [/]" if hyp.type in ("config_issue", "env_mismatch", "null_reference") else \
+                             f"[bold white on magenta] {hyp.type.upper()} [/]" if hyp.type in ("import_failure", "broken_reference") else \
+                             f"[bold black on yellow] {hyp.type.upper()} [/]" if hyp.type in ("bad_state_propagation", "api_mismatch") else \
+                             f"[bold black on green] {hyp.type.upper()} [/]" if hyp.type == "recent_change" else \
+                             f"[bold white on blue] {hyp.type.upper()} [/]" if hyp.type == "async_issue" else \
+                             f"[bold white on dim] {hyp.type.upper()} [/]"
+                             
+                origin = f"{hyp.origin_file}:{hyp.line_number}" if hyp.line_number else hyp.origin_file
+                
+                lines.append(
+                    f"\n{idx+1}. {type_badge} [bold white]{hyp.root_cause}[/] "
+                    f"([{c_color}]{conf_val:.0f}% confidence[/])\n"
+                    f"   [bold]Origin File:[/] [cyan]{origin}[/]\n"
+                    f"   [bold]Reasoning:[/] {hyp.reasoning_summary}\n"
+                    f"   [bold]Safest Fix:[/] [green]{hyp.safest_fix_direction}[/]"
+                )
+                if hyp.probable_impacted_modules:
+                    lines.append(f"   [bold]Impacted Modules:[/] {', '.join(hyp.probable_impacted_modules)}")
+            
+            console.print()
+            console.print(Panel(
+                "\n".join(lines),
+                title="[bold yellow]AI ROOT CAUSE RANKED HYPOTHESES[/]",
+                border_style="yellow",
+                box=box.ROUNDED
+            ))
+
         # 3. Display AI Recommendation Panel
         conf_color = "green" if rec.confidence > 0.8 else "yellow" if rec.confidence > 0.5 else "red"
         console.print()
