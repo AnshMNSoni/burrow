@@ -25,6 +25,7 @@ class Settings(BaseModel):
     # ── Auto Patch ────────────────────────────────────────────────────────────
     enable_auto_patch: bool = Field(default=False)
     patch_min_confidence: float = Field(default=0.70)
+    weak_confidence_threshold: float = Field(default=0.60)
     allowed_write_paths: Optional[str] = Field(default=None)
 
     # ── Performance & Caching ─────────────────────────────────────────────────

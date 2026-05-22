@@ -18,6 +18,26 @@ class JSONFormatter(logging.Formatter):
             log_data["exception"] = self.formatException(record.exc_info)
         return json.dumps(log_data)
 
+class SafeStreamHandler(logging.StreamHandler):
+    """A StreamHandler that gracefully handles ValueError/OSError when writing to closed streams during shutdown."""
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            stream = self.stream
+            if stream is None or getattr(stream, "closed", False):
+                return
+            super().emit(record)
+        except (ValueError, OSError):
+            pass
+
+    def handleError(self, record: logging.LogRecord) -> None:
+        try:
+            stream = self.stream
+            if stream is None or getattr(stream, "closed", False):
+                return
+            super().handleError(record)
+        except Exception:
+            pass
+
 def setup_logging(log_level: str = "info", log_format: str = "console") -> None:
     level = getattr(logging, log_level.upper(), logging.INFO)
     
@@ -28,7 +48,7 @@ def setup_logging(log_level: str = "info", log_format: str = "console") -> None:
     for handler in list(root_logger.handlers):
         root_logger.removeHandler(handler)
         
-    handler = logging.StreamHandler(sys.stderr)
+    handler = SafeStreamHandler(sys.stderr)
     if log_format.lower() == "json":
         handler.setFormatter(JSONFormatter())
     else:

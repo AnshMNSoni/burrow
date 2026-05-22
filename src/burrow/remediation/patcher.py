@@ -124,17 +124,62 @@ class Patcher:
                     restored_content = f_bak.read()
                 # Create parent dirs if they got deleted
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(target_path, "w", encoding="utf-8") as f_targ:
-                    f_targ.write(restored_content)
+                
+                # Atomic write: write to temp file, then rename/replace
+                import tempfile
+                temp_fd, temp_file_path = tempfile.mkstemp(dir=str(target_path.parent), prefix=f"{target_path.name}.tmp", text=True)
+                try:
+                    with os.fdopen(temp_fd, 'w', encoding="utf-8") as f_tmp:
+                        f_tmp.write(restored_content)
+                    os.replace(temp_file_path, target_path)
+                except Exception as restore_err:
+                    if os.path.exists(temp_file_path):
+                        try:
+                            os.unlink(temp_file_path)
+                        except Exception:
+                            pass
+                    raise restore_err
+
                 msg = f"Rolled back changes to {rel_path} successfully."
                 
-            # Remove backup artifacts
+            # Remove backup artifacts ONLY after successful restoration
             latest_meta_path.unlink()
             backup_path.unlink()
             
             return True, msg
         except Exception as e:
             return False, f"Failed to perform rollback: {str(e)}"
+
+    def verify_patch_safety(self, suggestion: FixSuggestion) -> None:
+        """Verifies that the target file has not been modified since the suggestion was generated.
+        
+        Raises ValueError if there is a mismatch.
+        """
+        # First verify trust boundary to resolve path and do safety scope checking
+        target_path = self.verify_trust_boundary(suggestion.affected_file)
+        
+        current_sha = self.compute_sha256(target_path)
+        expected_sha = suggestion.original_sha256 or ""
+        
+        # If suggestion expected the file to exist (original_sha256 is set) but it doesn't,
+        # or if suggestion expected it NOT to exist but it does, or if the hashes mismatch:
+        if current_sha != expected_sha:
+            if not expected_sha and current_sha:
+                raise ValueError(
+                    f"Integrity Check Failed: File '{suggestion.affected_file}' was expected to NOT exist, "
+                    f"but it now exists. Aborting patch to prevent overwriting newer changes."
+                )
+            elif expected_sha and not current_sha:
+                raise ValueError(
+                    f"Integrity Check Failed: File '{suggestion.affected_file}' was expected to exist, "
+                    f"but it does not exist now. Aborting patch application."
+                )
+            else:
+                raise ValueError(
+                    f"Integrity Check Failed: File '{suggestion.affected_file}' has been modified "
+                    f"since the remediation suggestion was generated (current SHA-256: {current_sha[:8]}, "
+                    f"expected: {expected_sha[:8]}). Aborting patch to prevent overwriting newer changes."
+                )
 
     def apply_suggestion(self, original_content: str, suggestion: FixSuggestion) -> str:
         """Applies suggestion patch to the original content string (Python port of TypeScript PatchProvider)."""

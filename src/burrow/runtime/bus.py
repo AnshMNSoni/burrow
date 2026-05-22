@@ -125,17 +125,34 @@ class EventBus:
         """Listener that automatically runs analysis in a background daemon thread."""
         def _run():
             try:
-                logger.info(f"Triggering automated analysis for session: {event.session_id}")
+                local_logger = logger
+                if local_logger is not None:
+                    local_logger.info(f"Triggering automated analysis for session: {event.session_id}")
+                
                 result = self.engine.analyze_content(event.content)
+                if result is None:
+                    return
 
                 try:
                     from burrow.cli.main import display_analysis_result
                     display_analysis_result(result)
-                except ImportError:
-                    print("\n=== BURROW ANALYSIS RESULT ===")
-                    print(result.model_dump_json(indent=2))
-            except Exception as e:
-                logger.error(f"Automated runtime analysis listener failed: {e}")
+                except (ImportError, Exception):
+                    import sys
+                    stdout = getattr(sys, "stdout", None)
+                    if stdout and not getattr(stdout, "closed", False):
+                        try:
+                            stdout.write("\n=== BURROW ANALYSIS RESULT ===\n")
+                            stdout.write(result.model_dump_json(indent=2) + "\n")
+                            stdout.flush()
+                        except Exception:
+                            pass
+            except BaseException as e:
+                try:
+                    local_logger = logger
+                    if local_logger is not None:
+                        local_logger.error(f"Automated runtime analysis listener failed: {e}")
+                except Exception:
+                    pass
 
         # Run analysis in a daemon thread so the bus is never blocked by slow analysis
         t = threading.Thread(target=_run, daemon=True, name=f"burrow-analysis-{event.session_id[:8]}")

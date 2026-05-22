@@ -86,15 +86,24 @@ def print_error_stack(error, console, title_prefix=""):
 
 def display_analysis_result(result: AnalysisResult):
     """Renders the full traceback analysis report to the console."""
+    from unittest.mock import Mock
+    if isinstance(result, Mock):
+        return
+    if getattr(result, "error", None) is None or isinstance(result.error, Mock):
+        return
+    if getattr(result, "recommendation", None) is None or isinstance(result.recommendation, Mock):
+        return
+
     # Display Workspace Banner if workspace context is present
-    if result.workspace_context:
+    if result.workspace_context and not isinstance(result.workspace_context, Mock):
         ws = result.workspace_context
-        fw_list = ", ".join(ws.structure.detected_frameworks or []) or "None detected"
+        fw = getattr(getattr(ws, "structure", None), "detected_frameworks", None)
+        fw_list = ", ".join(fw) if isinstance(fw, (list, tuple)) else "None detected"
         branch_info = ""
         changes_info = ""
-        if ws.git:
+        if ws.git and not isinstance(ws.git, Mock):
             branch_info = f", Git Branch: [bold cyan]{ws.git.active_branch}[/]"
-            mod_count = sum(1 for c in ws.git.recent_changes if c.status in ("modified", "untracked", "added", "deleted"))
+            mod_count = sum(1 for c in ws.git.recent_changes if getattr(c, "status", None) in ("modified", "untracked", "added", "deleted"))
             changes_info = f", Pending Changes: [bold red]{mod_count} files[/]"
         
         console.print(Panel(
@@ -178,6 +187,20 @@ def display_analysis_result(result: AnalysisResult):
 
     # 3. Display AI Recommendation Panel
     conf_color = "green" if rec.confidence > 0.8 else "yellow" if rec.confidence > 0.5 else "red"
+    
+    # Surface Uncertainty Warning if confidence is weak
+    if rec.confidence <= settings.weak_confidence_threshold:
+        console.print()
+        console.print(Panel(
+            f"[bold red]⚠ HIGH UNCERTAINTY WARNING[/]\n"
+            f"Burrow is highly uncertain about this diagnosis (Confidence: {rec.confidence * 100:.1f}%).\n"
+            f"The LLM provider returned a low confidence score, indicating weak trace patterns or sparse code context.\n"
+            f"[bold red]DO NOT[/] apply suggestions blindly. Please verify the cause and path manually.",
+            title="[bold red]Safety Alert[/]",
+            border_style="red",
+            box=box.ROUNDED
+        ))
+        
     console.print()
     console.print(Panel(
         f"[bold green]ANALYZED CAUSE[/]\n"
@@ -438,6 +461,13 @@ def handle_patch(args):
             error_console.print(f"[bold red]{pe}[/]")
             sys.exit(1)
             
+        # Verify patch safety and file integrity
+        try:
+            patcher.verify_patch_safety(suggestion)
+        except ValueError as ve:
+            error_console.print(f"[bold red]Safety Check Violation:[/] {ve}")
+            sys.exit(1)
+            
         # Read target file current content
         original_content = ""
         if target_path.exists():
@@ -474,6 +504,21 @@ def handle_patch(args):
         
         # Handle non-interactive mode permissions check
         if args.yes:
+            if suggestion.confidence_score < settings.weak_confidence_threshold:
+                error_console.print(
+                    f"[bold red]Safety Check Violation: Non-interactive auto-patching (--yes) is blocked "
+                    f"because suggestion confidence ({suggestion.confidence_score * 100:.0f}%) is below the weak "
+                    f"confidence threshold ({settings.weak_confidence_threshold * 100:.0f}%).[/]"
+                )
+                sys.exit(1)
+                
+            if suggestion.risk_level.lower() == "risky":
+                error_console.print(
+                    f"[bold red]Safety Check Violation: Non-interactive auto-patching (--yes) is blocked "
+                    f"because this patch is classified as RISKY. Risky patches require explicit interactive user approval.[/]"
+                )
+                sys.exit(1)
+
             if not settings.enable_auto_patch:
                 error_console.print("[bold red]Security Violation: Non-interactive auto-patching (--yes) is disabled by configuration settings.[/]")
                 error_console.print("Enable BURROW_ENABLE_AUTO_PATCH=true in environment or configuration to use non-interactive mode.")

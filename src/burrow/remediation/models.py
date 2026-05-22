@@ -9,6 +9,7 @@ class FixSuggestion(BaseModel):
     risk_level: str = "safe"  # safe, medium, risky
     patch_preview: Optional[str] = None
     confidence_score: float = 0.50
+    original_sha256: Optional[str] = None
 
 class RemediationResult(BaseModel):
     suggestions: List[FixSuggestion] = Field(default_factory=list)

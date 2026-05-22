@@ -230,5 +230,27 @@ class RemediationEngine:
             if key not in seen:
                 seen.add(key)
                 unique_suggestions.append(s)
+
+        for s in unique_suggestions:
+            s.original_sha256 = self._compute_sha256(s.affected_file)
                 
         return RemediationResult(suggestions=unique_suggestions)
+
+    def _compute_sha256(self, file_path: str) -> Optional[str]:
+        """Computes SHA-256 checksum of file relative to project root."""
+        import hashlib
+        try:
+            # First handle special case like .env or relative files
+            resolved = Path(self.project_root / file_path).resolve()
+            # Safety check: make sure resolved is relative to project_root to prevent traversal
+            if not resolved.is_relative_to(self.project_root):
+                return None
+            if not resolved.exists() or not resolved.is_file():
+                return None
+            hasher = hashlib.sha256()
+            with open(resolved, "rb") as f:
+                for chunk in iter(lambda: f.read(4096), b""):
+                    hasher.update(chunk)
+            return hasher.hexdigest()
+        except Exception:
+            return None
