@@ -127,6 +127,24 @@ def handle_analyze(args):
         surfaced_prefix = "Surfaced Exception - " if error.chained_errors else ""
         print_error_stack(error, console, title_prefix=surfaced_prefix)
 
+        # Display Codebase Vulnerabilities & Warnings if present and relevant
+        if result.symbol_graph_data and result.symbol_graph_data.smells:
+            smells_text = []
+            for smell in result.symbol_graph_data.smells:
+                sev = f"[bold red]{smell.severity.upper()}[/]" if smell.severity.lower() == "error" else f"[bold yellow]{smell.severity.upper()}[/]"
+                smells_text.append(
+                    f"• [{sev}] [bold]{smell.smell_type}[/]: {smell.message}\n"
+                    f"  in [cyan]{smell.file_path}:{smell.line_number}[/]"
+                )
+            if smells_text:
+                console.print()
+                console.print(Panel(
+                    "\n\n".join(smells_text),
+                    title="[bold yellow]CODEBASE VULNERABILITIES & WARNINGS[/]",
+                    border_style="yellow",
+                    box=box.ROUNDED
+                ))
+
         # 3. Display AI Recommendation Panel
         conf_color = "green" if rec.confidence > 0.8 else "yellow" if rec.confidence > 0.5 else "red"
         console.print()
@@ -168,6 +186,63 @@ def handle_api(args):
     uvicorn.run("burrow.api.app:app", host=args.host, port=args.port, reload=args.reload)
 
 
+def handle_check(args):
+    """Performs static symbol graph analysis on the entire workspace and displays detected issues."""
+    try:
+        setup_logging(args.log_level, log_format="console")
+        from burrow.symbol.graph import SymbolGraphBuilder
+        from burrow.symbol.analyzer import SymbolGraphAnalyzer
+        from rich.table import Table
+        
+        engine = BurrowEngine(project_root=args.project_root, llm_provider=args.llm_provider)
+        console.print("[bold cyan]Initializing codebase AST & Symbol Graph analysis...[/]")
+        builder = SymbolGraphBuilder(engine.project_root)
+        builder.build()
+        analyzer = SymbolGraphAnalyzer(engine.project_root, builder)
+        smells = analyzer.analyze()
+        
+        if not smells:
+            console.print("[bold green]✔ No codebase vulnerabilities or smells detected![/]")
+            sys.exit(0)
+            
+        table = Table(title="[bold yellow]CODEBASE VULNERABILITIES & SMELLS[/]", box=box.ROUNDED)
+        table.add_column("File Path", style="cyan")
+        table.add_column("Line", style="magenta", justify="right")
+        table.add_column("Type", style="blue")
+        table.add_column("Severity", justify="center")
+        table.add_column("Description", style="white")
+        
+        has_error = False
+        for smell in smells:
+            sev = smell.severity.lower()
+            if sev == "error":
+                sev_str = "[bold red]ERROR[/]"
+                has_error = True
+            elif sev == "warning":
+                sev_str = "[bold yellow]WARNING[/]"
+            else:
+                sev_str = "[bold cyan]INFO[/]"
+                
+            table.add_row(
+                smell.file_path,
+                str(smell.line_number),
+                smell.smell_type,
+                sev_str,
+                smell.message
+            )
+            
+        console.print(table)
+        if has_error:
+            console.print("\n[bold red]✖ High-severity codebase errors detected. Check failed.[/]")
+            sys.exit(1)
+        else:
+            console.print("\n[bold yellow]✔ Codebase scan completed with warnings/info.[/]")
+            sys.exit(0)
+    except Exception as e:
+        error_console.print(f"[bold red]Error:[/] {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="burrow",
@@ -193,6 +268,10 @@ def main():
     # scan subcommand
     scan_parser = subparsers.add_parser("scan", help="Scan local project workspace and output repository intelligence metadata")
     scan_parser.set_defaults(func=handle_scan)
+
+    # check subcommand
+    check_parser = subparsers.add_parser("check", help="Scan the codebase statically and list code smells")
+    check_parser.set_defaults(func=handle_check)
 
     # api subcommand
     api_parser = subparsers.add_parser("api", help="Start FastAPI service interface")

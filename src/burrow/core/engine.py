@@ -8,6 +8,9 @@ from burrow.graph import Graph, populate_error_graph
 from burrow.llm import get_llm_client, LLMRecommendation
 from burrow.workspace.scanner import WorkspaceScanner
 from burrow.workspace.models import WorkspaceContext
+from burrow.symbol.models import SymbolGraphData
+from burrow.symbol.graph import SymbolGraphBuilder
+from burrow.symbol.analyzer import SymbolGraphAnalyzer
 from burrow.utils.logging import logger
 
 class AnalysisResult(BaseModel):
@@ -16,6 +19,7 @@ class AnalysisResult(BaseModel):
     recommendation: LLMRecommendation
     graph: Dict[str, Any]
     workspace_context: Optional[WorkspaceContext] = None
+    symbol_graph_data: Optional[SymbolGraphData] = None
 
 
 class BurrowEngine:
@@ -77,6 +81,42 @@ class BurrowEngine:
             
             annotate_frames(error)
 
+        # 5. Run AST + Symbol Graph Engine
+        logger.info("Running AST and symbol graph builder...")
+        symbol_graph_data = None
+        try:
+            builder = SymbolGraphBuilder(self.project_root)
+            builder.build()
+            analyzer = SymbolGraphAnalyzer(self.project_root, builder)
+            all_smells = analyzer.analyze()
+
+            # Extract all files in the traceback
+            traceback_files = set()
+            def collect_files(err):
+                for frame in err.frames:
+                    if frame.file_path:
+                        try:
+                            resolved_frame_path = Path(frame.file_path).resolve()
+                            rel_path = str(resolved_frame_path.relative_to(self.project_root).as_posix())
+                            traceback_files.add(rel_path)
+                        except Exception:
+                            traceback_files.add(frame.file_path)
+                for chained in err.chained_errors:
+                    collect_files(chained)
+            collect_files(error)
+
+            # Filter smells to only those in traceback files
+            filtered_smells = [
+                smell for smell in all_smells
+                if smell.file_path in traceback_files or any(f in smell.file_path for f in traceback_files)
+            ]
+
+            serialized = builder.to_serialized_data()
+            serialized.smells = filtered_smells
+            symbol_graph_data = serialized
+        except Exception as e:
+            logger.error(f"Symbol graph analysis failed: {e}")
+
         # 6. Compile AI suggestions
         logger.info(f"Querying reasoning intelligence (provider: {self.llm_provider})...")
         recommendation = self.llm_client.analyze_error(error)
@@ -86,7 +126,8 @@ class BurrowEngine:
             error=error,
             recommendation=recommendation,
             graph=graph.to_dict(),
-            workspace_context=workspace_context
+            workspace_context=workspace_context,
+            symbol_graph_data=symbol_graph_data
         )
 
     def analyze_file(self, file_path: Path) -> AnalysisResult:
