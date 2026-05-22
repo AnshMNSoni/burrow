@@ -117,13 +117,14 @@ class RootCauseAnalyzer:
                 probable_impacted_modules=impacted,
                 reasoning_summary="An environment configuration file (.env) was not found, but env-dependency patterns or .env.example were found in the project workspace.",
                 safest_fix_direction="Create a '.env' file in the project root and populate it with required configuration variables.",
-                confidence_score=0.85 if (env_example_keys or env_keys_referenced) else 0.50
+                confidence_score=0.95 if (env_example_keys or env_keys_referenced) else 0.50
             ))
 
         # Heuristic 1b: Missing keys referenced in the traceback
         for ref in env_keys_referenced:
             key = ref["key"]
             if key not in env_keys:
+                conf = 0.80 if not has_dot_env else 0.90
                 hypotheses.append(Hypothesis(
                     type="env_mismatch",
                     root_cause=f"Environment variable '{key}' is read in code but missing from the active .env configuration.",
@@ -132,7 +133,7 @@ class RootCauseAnalyzer:
                     probable_impacted_modules=[ref["frame"].module_name] if ref["frame"].module_name else [],
                     reasoning_summary=f"The application tried to read the environment variable '{key}' at {self._make_relative(ref['file'])}:{ref['line']}, but it is not set in the active .env file.",
                     safest_fix_direction=f"Add '{key}=your_value_here' to the '.env' file in the project root.",
-                    confidence_score=0.90
+                    confidence_score=conf
                 ))
 
         # Heuristic 1c: Missing .env.example keys in .env
@@ -287,6 +288,28 @@ class RootCauseAnalyzer:
                 reasoning_summary=f"The runtime encountered an undefined variable or property identifier at {crash_file}:{crash_line}.",
                 safest_fix_direction="Verify that the variable or function is defined, imported, or correctly spelled.",
                 confidence_score=0.90
+            ))
+        elif any(x in err_type for x in ["keyerror", "indexerror", "rangeerror", "valueerror", "lookuperror"]):
+            hypotheses.append(Hypothesis(
+                type="bad_state_propagation",
+                root_cause=f"Runtime error due to invalid state or key/index lookup: {error.message}",
+                origin_file=crash_file,
+                line_number=crash_line,
+                probable_impacted_modules=[crash_module] if crash_module else [],
+                reasoning_summary=f"The application encountered an invalid lookup or value restriction at {crash_file}:{crash_line}.",
+                safest_fix_direction="Check that keys, indices, and ranges are validated before access.",
+                confidence_score=0.85
+            ))
+        elif any(x in err_type for x in ["clierror", "error"]):
+            hypotheses.append(Hypothesis(
+                type="bad_state_propagation",
+                root_cause=f"Compiler or CLI command failure: {error.message}",
+                origin_file=crash_file,
+                line_number=crash_line,
+                probable_impacted_modules=[crash_module] if crash_module else [],
+                reasoning_summary=f"A compiler error or command line error was output during execution: '{error.message}'",
+                safest_fix_direction="Check for syntax errors, missing declarations, or invalid command arguments.",
+                confidence_score=0.85
             ))
 
         # 5. Timing / Async issues

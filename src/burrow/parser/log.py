@@ -10,12 +10,18 @@ class LogParser(BaseParser):
     DOCKER_PREFIX_REGEX = re.compile(r'^[a-zA-Z0-9_\-\.]+?\s*\|\s+')
     # Matches ISO 8601 timestamps like '2026-05-22T11:32:03.123456Z '
     TIMESTAMP_PREFIX_REGEX = re.compile(r'^\d{4}-\d{2}-\d{2}[T\s]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\s?')
+    # Matches ANSI escape sequences (e.g. colors)
+    ANSI_ESCAPE_REGEX = re.compile(r'\x1b\[[0-9;?]*[a-zA-Z]')
+    # Matches non-printable control characters (excluding tab and newlines)
+    CONTROL_CHARS_REGEX = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]')
 
     def strip_metadata(self, content: str) -> str:
-        """Removes Docker compose headers and timestamp prefixes line-by-line."""
+        """Removes Docker compose headers, timestamp prefixes, ANSI escape sequences, and non-printable control characters line-by-line."""
         cleaned_lines = []
         for line in content.splitlines():
-            line_cleaned = self.DOCKER_PREFIX_REGEX.sub("", line)
+            line_cleaned = self.ANSI_ESCAPE_REGEX.sub("", line)
+            line_cleaned = self.CONTROL_CHARS_REGEX.sub("", line_cleaned)
+            line_cleaned = self.DOCKER_PREFIX_REGEX.sub("", line_cleaned)
             line_cleaned = self.TIMESTAMP_PREFIX_REGEX.sub("", line_cleaned)
             cleaned_lines.append(line_cleaned)
         return "\n".join(cleaned_lines)
