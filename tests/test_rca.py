@@ -45,7 +45,7 @@ def test_rca_config_issue(temp_project_root):
     config_issues = [h for h in result.hypotheses if h.type == "config_issue"]
     assert len(config_issues) == 1
     assert "missing" in config_issues[0].root_cause.lower()
-    assert config_issues[0].confidence_score == 0.85
+    assert config_issues[0].confidence_score == 0.95
     
     # Env mismatches should exist because API_KEY and DATABASE_URL are referenced in traceback but missing from .env
     env_mismatches = [h for h in result.hypotheses if h.type == "env_mismatch"]
