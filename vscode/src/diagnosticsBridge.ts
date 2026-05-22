@@ -142,12 +142,8 @@ export class DiagnosticsBridge {
                 const line = (hypothesis.line_number && hypothesis.line_number > 0) ? hypothesis.line_number - 1 : 0;
                 const range = new vscode.Range(line, 0, line, 100);
 
-                const msg = `[Burrow Root Cause]
-Type: ${hypothesis.type}
-Cause: ${hypothesis.root_cause}
-Reasoning: ${hypothesis.reasoning_summary}
-Fix Direction: ${hypothesis.safest_fix_direction}
-Confidence: ${(hypothesis.confidence_score * 100).toFixed(0)}%`;
+                const msg = `[Burrow Root Cause] ${hypothesis.type.toUpperCase()}: ${hypothesis.root_cause} (Confidence: ${(hypothesis.confidence_score * 100).toFixed(0)}%)`;
+
 
                 const diagnostic = new vscode.Diagnostic(
                     range,
@@ -171,11 +167,8 @@ Confidence: ${(hypothesis.confidence_score * 100).toFixed(0)}%`;
                 const line = 0; // Top of file by default
                 const range = new vscode.Range(line, 0, line, 100);
 
-                const msg = `[Burrow Fix Suggestion]
-Description: ${suggestion.description}
-Rationale: ${suggestion.rationale}
-Risk Level: ${suggestion.risk_level}
-${suggestion.patch_preview ? `\nSuggested Patch:\n${suggestion.patch_preview}` : ''}`;
+                const msg = `[Burrow Fix Suggestion] ${suggestion.description} (${suggestion.risk_level.toUpperCase()})`;
+
 
                 const diagnostic = new vscode.Diagnostic(
                     range,
@@ -245,9 +238,8 @@ ${suggestion.patch_preview ? `\nSuggested Patch:\n${suggestion.patch_preview}` :
                     ? vscode.DiagnosticSeverity.Error
                     : vscode.DiagnosticSeverity.Warning;
 
-                const msg = `[Burrow Traceback] ${errType}: ${errMsg}
-At function: ${frame.function_name || 'unknown'}
-Original trace line: ${frame.raw_line.trim()}`;
+                const msg = `[Burrow Traceback] ${errType}: ${errMsg} in ${frame.function_name || 'unknown'}()`;
+
 
                 const diagnostic = new vscode.Diagnostic(
                     range,
