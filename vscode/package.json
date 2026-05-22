@@ -112,6 +112,21 @@
             "ERROR"
           ],
           "description": "Logging level for the background FastAPI backend server."
+        },
+        "burrow.enableAutoPatch": {
+          "type": "boolean",
+          "default": false,
+          "description": "Allow non-interactive patch application (requires explicit trust check)."
+        },
+        "burrow.patchMinConfidence": {
+          "type": "number",
+          "default": 0.70,
+          "description": "Minimum patch confidence score threshold to suggest or auto-apply fixes."
+        },
+        "burrow.allowedWritePaths": {
+          "type": "string",
+          "default": "",
+          "description": "Comma-separated list of directories relative to workspace root permitted for patch writes (leave empty to allow whole workspace)."
         }
       }
     }

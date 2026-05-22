@@ -34,7 +34,8 @@ class RemediationEngine:
                         likely_edit_region="Entire file",
                         rationale="A local `.env` configuration file was not found, but `.env.example` exists. Creating `.env` ensures variables are present.",
                         risk_level="safe",
-                        patch_preview="Create new file '.env' and populate with keys from '.env.example'"
+                        patch_preview="Create new file '.env' and populate with keys from '.env.example'",
+                        confidence_score=0.95
                     ))
                 elif hyp.type == "env_mismatch":
                     # Try to extract the key from hyp.root_cause
@@ -54,7 +55,8 @@ class RemediationEngine:
                         likely_edit_region="Append to file",
                         rationale=f"The application expects environment variable '{missing_key}' to be loaded, but it is currently undefined locally.",
                         risk_level="safe",
-                        patch_preview=f"+ {missing_key}=value_here"
+                        patch_preview=f"+ {missing_key}=value_here",
+                        confidence_score=0.95
                     ))
         
         # 1.1 Env Loading Order Fixes
@@ -68,9 +70,10 @@ class RemediationEngine:
                 likely_edit_region="First lines of file",
                 rationale="Ensures environment variables are fully populated in the process before other modules attempt to access them during import.",
                 risk_level="safe",
-                patch_preview="[Python Example]\nimport dotenv\ndotenv.load_dotenv()\n# Import other dependencies after loading env"
+                patch_preview="[Python Example]\nimport dotenv\ndotenv.load_dotenv()\n# Import other dependencies after loading env",
+                confidence_score=0.95
             ))
-
+ 
         # 2. Null Guards & Code Smell Fixes
         null_smells = []
         if symbol_graph_data and symbol_graph_data.smells:
@@ -83,9 +86,10 @@ class RemediationEngine:
                 likely_edit_region=f"Line {smell.line_number}",
                 rationale=f"Prevents failures like undefined attribute or null dereference accesses. Smell message: {smell.message}",
                 risk_level="safe",
-                patch_preview=f"if variable is not None:\n    # access attribute safely"
+                patch_preview=f"if variable is not None:\n    # access attribute safely",
+                confidence_score=0.90
             ))
-
+ 
         # 3. Defensive Checks based on Error Signatures
         err_type_lower = error.error_type.lower()
         if "zerodivision" in err_type_lower:
@@ -104,7 +108,8 @@ class RemediationEngine:
                 likely_edit_region=f"Line {crash_line}",
                 rationale="Avoids runtime ZeroDivisionError by ensuring division is only performed when the denominator is not zero.",
                 risk_level="safe",
-                patch_preview="if divisor == 0:\n    # handle default case or raise custom exception\nelse:\n    result = value / divisor"
+                patch_preview="if divisor == 0:\n    # handle default case or raise custom exception\nelse:\n    result = value / divisor",
+                confidence_score=0.85
             ))
             
         elif "typeerror" in err_type_lower:
@@ -122,9 +127,10 @@ class RemediationEngine:
                 likely_edit_region=f"Line {crash_line}",
                 rationale="Ensures that variable type is compatible with the operation (e.g. converting a string to an integer before addition).",
                 risk_level="safe",
-                patch_preview="if not isinstance(variable, expected_type):\n    variable = coerce_type(variable)"
+                patch_preview="if not isinstance(variable, expected_type):\n    variable = coerce_type(variable)",
+                confidence_score=0.85
             ))
-
+ 
         # 4. Import Corrections & Dependency Updates
         if rca_result:
             for hyp in rca_result.hypotheses:
@@ -135,7 +141,8 @@ class RemediationEngine:
                         likely_edit_region=f"Line {hyp.line_number or 1}",
                         rationale="Resolves import failures by ensuring the correct local module or file is imported.",
                         risk_level="safe",
-                        patch_preview=None
+                        patch_preview=None,
+                        confidence_score=0.80
                     ))
                     
                     pkg_file = "requirements.txt"
@@ -150,9 +157,10 @@ class RemediationEngine:
                         likely_edit_region="Dependency list",
                         rationale="Ensures the required library is installed and available in the execution environment.",
                         risk_level="medium",
-                        patch_preview=f"+ \"package_name\": \"^version\""
+                        patch_preview=f"+ \"package_name\": \"^version\"",
+                        confidence_score=0.70
                     ))
-
+ 
         # 5. Async Timing / Retry Logic
         has_async = False
         if rca_result:
@@ -175,9 +183,10 @@ class RemediationEngine:
                 likely_edit_region=f"Line {crash_line}",
                 rationale="Mitigates race conditions or transient timing failures in asynchronous functions by retrying on failure or using synchronization locks.",
                 risk_level="medium",
-                patch_preview="for attempt in range(max_retries):\n    try:\n        return await async_call()\n    except TransientError:\n        await asyncio.sleep(backoff)"
+                patch_preview="for attempt in range(max_retries):\n    try:\n        return await async_call()\n    except TransientError:\n        await asyncio.sleep(backoff)",
+                confidence_score=0.70
             ))
-
+ 
         # 6. AI-driven structural patch suggestions (if recommendation is present)
         if recommendation:
             code_blocks = re.findall(r"```(?:\w+)?\n(.*?)\n```", recommendation.remediation, re.DOTALL)
@@ -190,15 +199,18 @@ class RemediationEngine:
             
             ai_files = recommendation.related_files if recommendation.related_files else ["Multiple Files"]
             for file_path in ai_files[:3]:
+                # Heuristically score AI suggestions based on recommendation confidence
+                ai_conf = max(0.40, recommendation.confidence * 0.8)
                 suggestions.append(FixSuggestion(
                     description="Apply AI-suggested structural remediation",
                     affected_file=file_path,
                     likely_edit_region="Identified edit region",
                     rationale=recommendation.cause,
                     risk_level="risky" if ai_patch else "medium",
-                    patch_preview=ai_patch or recommendation.remediation
+                    patch_preview=ai_patch or recommendation.remediation,
+                    confidence_score=ai_conf
                 ))
-
+ 
         # Sort suggestions: safe (1) -> medium (2) -> risky (3)
         def risk_score(s: FixSuggestion) -> int:
             if s.risk_level == "safe":

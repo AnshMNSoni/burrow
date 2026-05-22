@@ -370,6 +370,139 @@ def handle_watch(args):
         sys.exit(1)
 
 
+def handle_patch(args):
+    """Processes traceback, displays suggestions, previews diff, and applies patch with user confirmation/rollback."""
+    from burrow.remediation.patcher import Patcher
+    
+    setup_logging(args.log_level, log_format="console")
+    patcher = Patcher(Path(args.project_root))
+    
+    if args.rollback:
+        console.print("[bold cyan]Attempting to rollback latest patch...[/]")
+        success, msg = patcher.rollback_latest()
+        if success:
+            console.print(f"[bold green]✔ Rollback successful:[/] {msg}")
+            sys.exit(0)
+        else:
+            error_console.print(f"[bold red]✖ Rollback failed:[/] {msg}")
+            sys.exit(1)
+            
+    try:
+        content = read_input(args.input)
+        engine = BurrowEngine(project_root=args.project_root, llm_provider=args.llm_provider)
+        result = engine.analyze_content(content)
+        
+        if not result.remediation_result or not result.remediation_result.suggestions:
+            console.print("[bold yellow]No remediation suggestions found for this traceback.[/]")
+            sys.exit(0)
+            
+        suggestions = result.remediation_result.suggestions
+        
+        # Filter by minimum confidence
+        min_conf = settings.patch_min_confidence
+        valid_suggestions = [s for s in suggestions if s.confidence_score >= min_conf]
+        
+        if not valid_suggestions:
+            console.print(f"[bold yellow]No suggestions meet the minimum confidence threshold ({min_conf * 100:.0f}%).[/]")
+            sys.exit(0)
+            
+        # Select suggestion
+        selected_idx = args.suggestion_index
+        if selected_idx is None:
+            console.print("\n[bold green]=== AVAILABLE REMEDIATION PATCHES ===[/]")
+            for idx, sug in enumerate(valid_suggestions):
+                risk_badge = f"[bold green]SAFE[/]" if sug.risk_level == "safe" else f"[bold yellow]MEDIUM[/]" if sug.risk_level == "medium" else f"[bold red]RISKY[/]"
+                console.print(
+                    f"[{idx}] [bold]{sug.description}[/] ({sug.affected_file})\n"
+                    f"    Risk: {risk_badge} | Confidence: [cyan]{sug.confidence_score*100:.0f}%[/]\n"
+                    f"    Rationale: {sug.rationale}\n"
+                )
+            
+            try:
+                choice = console.input("[bold yellow]Select a patch index to apply:[/] ")
+                selected_idx = int(choice.strip())
+            except (ValueError, KeyboardInterrupt):
+                console.print("\n[bold red]Operation cancelled.[/]")
+                sys.exit(1)
+                
+        if selected_idx < 0 or selected_idx >= len(valid_suggestions):
+            error_console.print(f"[bold red]Error: Invalid suggestion index {selected_idx}[/]")
+            sys.exit(1)
+            
+        suggestion = valid_suggestions[selected_idx]
+        
+        # Verify trust boundary
+        try:
+            target_path = patcher.verify_trust_boundary(suggestion.affected_file)
+        except PermissionError as pe:
+            error_console.print(f"[bold red]{pe}[/]")
+            sys.exit(1)
+            
+        # Read target file current content
+        original_content = ""
+        if target_path.exists():
+            with open(target_path, "r", encoding="utf-8", errors="ignore") as f:
+                original_content = f.read()
+                
+        # Generate patched content
+        try:
+            patched_content = patcher.apply_suggestion(original_content, suggestion)
+        except Exception as e:
+            error_console.print(f"[bold red]Error applying patch logic:[/] {e}")
+            sys.exit(1)
+            
+        if original_content == patched_content:
+            console.print("[bold yellow]No changes detected. Patch is already applied or has no effect.[/]")
+            sys.exit(0)
+            
+        # Generate and show diff
+        diff_str = patcher.get_diff(original_content, patched_content, suggestion.affected_file)
+        console.print("\n[bold cyan]=== PROPOSED CHANGES (Unified Diff) ===[/]")
+        
+        diff_lines = diff_str.splitlines()
+        for line in diff_lines:
+            if line.startswith("+") and not line.startswith("+++"):
+                console.print(f"[green]{line}[/]")
+            elif line.startswith("-") and not line.startswith("---"):
+                console.print(f"[red]{line}[/]")
+            elif line.startswith("@@"):
+                console.print(f"[cyan]{line}[/]")
+            else:
+                console.print(line)
+                
+        console.print()
+        
+        # Handle non-interactive mode permissions check
+        if args.yes:
+            if not settings.enable_auto_patch:
+                error_console.print("[bold red]Security Violation: Non-interactive auto-patching (--yes) is disabled by configuration settings.[/]")
+                error_console.print("Enable BURROW_ENABLE_AUTO_PATCH=true in environment or configuration to use non-interactive mode.")
+                sys.exit(1)
+            confirm = "y"
+        else:
+            confirm = console.input("[bold yellow]Are you sure you want to apply this patch? [y/N]: [/]").strip().lower()
+            
+        if confirm != "y":
+            console.print("[bold yellow]Patch application cancelled by user.[/]")
+            sys.exit(0)
+            
+        # Create backup
+        console.print("[dim]Creating rollback backup...[/]")
+        patcher.backup_file(target_path, suggestion)
+        
+        # Write file content
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(target_path, "w", encoding="utf-8") as f:
+            f.write(patched_content)
+            
+        console.print(f"[bold green]✔ Successfully applied patch to '{suggestion.affected_file}'![/]")
+        console.print("You can undo this patch anytime using: [bold]burrow patch --rollback[/]")
+        
+    except Exception as e:
+        error_console.print(f"[bold red]Error:[/] {e}")
+        sys.exit(1)
+
+
 def main():
     parser = argparse.ArgumentParser(
         prog="burrow",
@@ -417,6 +550,14 @@ def main():
     watch_parser = subparsers.add_parser("watch", help="Watch standard input stream for tracebacks and failures")
     watch_parser.add_argument("--source", default="generic", help="Source type of output logs (e.g. python, pytest, npm, docker)")
     watch_parser.set_defaults(func=handle_watch)
+
+    # patch subcommand
+    patch_parser = subparsers.add_parser("patch", help="Apply recommended remediation patch suggestions with verification and rollback support")
+    patch_parser.add_argument("input", nargs="?", default="-", help="Path to raw trace file, or '-' for stdin")
+    patch_parser.add_argument("--suggestion-index", "-i", type=int, default=None, help="The index of the fix suggestion to apply directly")
+    patch_parser.add_argument("--yes", "-y", action="store_true", help="Apply patch without interactive confirmation (requires enable_auto_patch to be true)")
+    patch_parser.add_argument("--rollback", action="store_true", help="Rollback the latest applied patch")
+    patch_parser.set_defaults(func=handle_patch)
 
     args = parser.parse_args()
     args.func(args)
