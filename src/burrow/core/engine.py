@@ -11,6 +11,8 @@ from burrow.workspace.models import WorkspaceContext
 from burrow.symbol.models import SymbolGraphData
 from burrow.symbol.graph import SymbolGraphBuilder
 from burrow.symbol.analyzer import SymbolGraphAnalyzer
+from burrow.rca.models import RCAResult
+from burrow.rca.engine import RootCauseAnalyzer
 from burrow.utils.logging import logger
 
 class AnalysisResult(BaseModel):
@@ -20,6 +22,7 @@ class AnalysisResult(BaseModel):
     graph: Dict[str, Any]
     workspace_context: Optional[WorkspaceContext] = None
     symbol_graph_data: Optional[SymbolGraphData] = None
+    rca_result: Optional[RCAResult] = None
 
 
 class BurrowEngine:
@@ -117,7 +120,16 @@ class BurrowEngine:
         except Exception as e:
             logger.error(f"Symbol graph analysis failed: {e}")
 
-        # 6. Compile AI suggestions
+        # 6. Run Root Cause Analysis heuristics
+        logger.info("Running Root Cause Analysis static analyzer...")
+        rca_result = None
+        try:
+            rca_analyzer = RootCauseAnalyzer(self.project_root)
+            rca_result = rca_analyzer.analyze(error, workspace_context, symbol_graph_data)
+        except Exception as e:
+            logger.error(f"Root Cause Analysis failed: {e}")
+
+        # 7. Compile AI suggestions
         logger.info(f"Querying reasoning intelligence (provider: {self.llm_provider})...")
         recommendation = self.llm_client.analyze_error(error)
 
@@ -127,7 +139,8 @@ class BurrowEngine:
             recommendation=recommendation,
             graph=graph.to_dict(),
             workspace_context=workspace_context,
-            symbol_graph_data=symbol_graph_data
+            symbol_graph_data=symbol_graph_data,
+            rca_result=rca_result
         )
 
     def analyze_file(self, file_path: Path) -> AnalysisResult:
