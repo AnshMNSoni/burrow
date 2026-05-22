@@ -21,6 +21,18 @@ export class StateManager {
         return vscode.workspace.getConfiguration('burrow').get<string>('logLevel') || 'INFO';
     }
 
+    public get enableAutoPatch(): boolean {
+        return vscode.workspace.getConfiguration('burrow').get<boolean>('enableAutoPatch', false);
+    }
+
+    public get patchMinConfidence(): number {
+        return vscode.workspace.getConfiguration('burrow').get<number>('patchMinConfidence', 0.70);
+    }
+
+    public get allowedWritePaths(): string {
+        return vscode.workspace.getConfiguration('burrow').get<string>('allowedWritePaths') || '';
+    }
+
     public get workspaceRoot(): string | undefined {
         const folders = vscode.workspace.workspaceFolders;
         if (folders && folders.length > 0) {

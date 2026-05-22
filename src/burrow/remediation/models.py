@@ -8,6 +8,7 @@ class FixSuggestion(BaseModel):
     rationale: str
     risk_level: str = "safe"  # safe, medium, risky
     patch_preview: Optional[str] = None
+    confidence_score: float = 0.50
 
 class RemediationResult(BaseModel):
     suggestions: List[FixSuggestion] = Field(default_factory=list)

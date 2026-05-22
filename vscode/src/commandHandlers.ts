@@ -196,12 +196,73 @@ export class CommandHandlers {
 
         try {
             const workspaceRoot = this.stateManager.workspaceRoot;
+            if (!workspaceRoot) {
+                vscode.window.showErrorMessage('Burrow: Workspace root is undefined.');
+                return;
+            }
+
             const resolvedPath = this.resolvePath(targetSuggestion.affected_file, workspaceRoot);
+            
+            // 1. Trust boundary: path traversal check
+            const relativePath = path.relative(workspaceRoot, resolvedPath);
+            if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+                vscode.window.showErrorMessage(`Burrow Security Violation: Target path "${targetSuggestion.affected_file}" lies outside the workspace root.`);
+                return;
+            }
+
+            // 2. Trust boundary: allowed write paths check
+            const allowed = this.stateManager.allowedWritePaths;
+            if (allowed) {
+                const allowedList = allowed.split(',').map(p => p.trim()).filter(Boolean);
+                if (allowedList.length > 0) {
+                    let allowedMatch = false;
+                    for (const allowedRel of allowedList) {
+                        const allowedAbs = path.resolve(workspaceRoot, allowedRel);
+                        const relToAllowed = path.relative(allowedAbs, resolvedPath);
+                        if (!relToAllowed.startsWith('..') && !path.isAbsolute(relToAllowed)) {
+                            allowedMatch = true;
+                            break;
+                        }
+                    }
+                    if (!allowedMatch) {
+                        vscode.window.showErrorMessage(`Burrow Security Violation: File "${targetSuggestion.affected_file}" is not in the allowed write scope list: ${allowed}`);
+                        return;
+                    }
+                }
+            }
+
+            // 3. Check minimum confidence threshold
+            const confidence = targetSuggestion.confidence_score !== undefined ? targetSuggestion.confidence_score : 0.50;
+            const minConf = this.stateManager.patchMinConfidence;
+            if (confidence < minConf) {
+                vscode.window.showErrorMessage(`Burrow: Cannot apply patch. Confidence score (${(confidence * 100).toFixed(0)}%) is below configured minimum (${(minConf * 100).toFixed(0)}%).`);
+                return;
+            }
+
+            // 4. Modal confirmation (never silently edit)
+            const choice = await vscode.window.showInformationMessage(
+                `Apply patch: "${targetSuggestion.description}" to file "${targetSuggestion.affected_file}"?`,
+                { modal: true },
+                'Apply Patch'
+            );
+            if (choice !== 'Apply Patch') {
+                return;
+            }
+
             const fileUri = vscode.Uri.file(resolvedPath);
 
             let originalContent = '';
             if (fs.existsSync(resolvedPath)) {
-                originalContent = await fs.promises.readFile(resolvedPath, 'utf8');
+                try {
+                    const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === resolvedPath);
+                    if (doc) {
+                        originalContent = doc.getText();
+                    } else {
+                        originalContent = await fs.promises.readFile(resolvedPath, 'utf8');
+                    }
+                } catch {
+                    originalContent = await fs.promises.readFile(resolvedPath, 'utf8');
+                }
             }
 
             const patchedContent = this.patchProvider.applyPatch(originalContent, targetSuggestion);
