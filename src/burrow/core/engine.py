@@ -13,6 +13,8 @@ from burrow.symbol.graph import SymbolGraphBuilder
 from burrow.symbol.analyzer import SymbolGraphAnalyzer
 from burrow.rca.models import RCAResult
 from burrow.rca.engine import RootCauseAnalyzer
+from burrow.remediation.models import RemediationResult
+from burrow.remediation.engine import RemediationEngine
 from burrow.utils.logging import logger
 
 class AnalysisResult(BaseModel):
@@ -23,6 +25,7 @@ class AnalysisResult(BaseModel):
     workspace_context: Optional[WorkspaceContext] = None
     symbol_graph_data: Optional[SymbolGraphData] = None
     rca_result: Optional[RCAResult] = None
+    remediation_result: Optional[RemediationResult] = None
 
 
 class BurrowEngine:
@@ -138,6 +141,21 @@ class BurrowEngine:
             rca_result=rca_result
         )
 
+        # 8. Generate safe remediation recommendations and patch suggestions
+        logger.info("Running Remediation static and AI-augmented engine...")
+        remediation_result = None
+        try:
+            rem_engine = RemediationEngine(self.project_root)
+            remediation_result = rem_engine.generate_suggestions(
+                error,
+                workspace_context=workspace_context,
+                symbol_graph_data=symbol_graph_data,
+                rca_result=rca_result,
+                recommendation=recommendation
+            )
+        except Exception as e:
+            logger.error(f"Remediation analysis failed: {e}")
+
         logger.info("Traceback analysis sequence completed successfully.")
         return AnalysisResult(
             error=error,
@@ -145,7 +163,8 @@ class BurrowEngine:
             graph=graph.to_dict(),
             workspace_context=workspace_context,
             symbol_graph_data=symbol_graph_data,
-            rca_result=rca_result
+            rca_result=rca_result,
+            remediation_result=remediation_result
         )
 
     def analyze_file(self, file_path: Path) -> AnalysisResult:

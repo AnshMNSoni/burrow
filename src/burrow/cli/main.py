@@ -201,6 +201,53 @@ def handle_analyze(args):
         ))
         console.print()
 
+        # 4. Display Fix Suggestions and Patch Previews (Stage 7)
+        if result.remediation_result and result.remediation_result.suggestions:
+            rem_lines = []
+            for idx, sug in enumerate(result.remediation_result.suggestions):
+                risk_val = sug.risk_level.lower()
+                if risk_val == "safe":
+                    risk_badge = "[bold black on green] SAFE [/]"
+                elif risk_val == "medium":
+                    risk_badge = "[bold black on yellow] MEDIUM [/]"
+                else:
+                    risk_badge = "[bold white on red] RISKY [/]"
+                
+                rem_lines.append(
+                    f"[bold yellow]Suggestion #{idx+1} {risk_badge}[/]\n"
+                    f"  [bold]Fix Description:[/] [white]{sug.description}[/]\n"
+                    f"  [bold]Affected File:[/] [cyan]{sug.affected_file}[/]"
+                )
+                if sug.likely_edit_region:
+                    rem_lines.append(f"  [bold]Likely Edit Region:[/] {sug.likely_edit_region}")
+                
+                rem_lines.append(
+                    f"  [bold]Why it helps:[/] {sug.rationale}"
+                )
+                
+                if sug.patch_preview:
+                    rem_lines.append("  [bold]Patch Preview:[/]")
+                    preview_lines = sug.patch_preview.split("\n")
+                    formatted_preview = []
+                    for line in preview_lines:
+                        if line.startswith("+"):
+                            formatted_preview.append(f"    [green]{line}[/]")
+                        elif line.startswith("-"):
+                            formatted_preview.append(f"    [red]{line}[/]")
+                        else:
+                            formatted_preview.append(f"    [dim]{line}[/]")
+                    rem_lines.append("\n".join(formatted_preview))
+                
+                rem_lines.append("")
+                
+            console.print(Panel(
+                "\n".join(rem_lines).rstrip(),
+                title="[bold green]RECOMMENDED REMEDIATION & PATCH SUGGESTIONS[/]",
+                border_style="green",
+                box=box.ROUNDED
+            ))
+            console.print()
+
     except Exception as e:
         error_console.print(f"[bold red]Error:[/] {e}")
         sys.exit(1)
