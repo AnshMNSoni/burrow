@@ -1,0 +1,94 @@
+{
+  "name": "burrow",
+  "displayName": "Burrow",
+  "description": "Local-first AI debugging intelligence extension",
+  "version": "0.1.0",
+  "publisher": "ansh",
+  "engines": {
+    "vscode": "^1.89.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters",
+    "Debuggers"
+  ],
+  "activationEvents": [],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "burrow.analyzeSelection",
+        "title": "Burrow: Analyze Selection"
+      },
+      {
+        "command": "burrow.analyzeFile",
+        "title": "Burrow: Analyze Active File"
+      },
+      {
+        "command": "burrow.startBackend",
+        "title": "Burrow: Start API Backend"
+      },
+      {
+        "command": "burrow.stopBackend",
+        "title": "Burrow: Stop API Backend"
+      },
+      {
+        "command": "burrow.clearDiagnostics",
+        "title": "Burrow: Clear Diagnostics"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "burrow.analyzeSelection",
+          "group": "navigation",
+          "when": "editorHasSelection"
+        },
+        {
+          "command": "burrow.analyzeFile",
+          "group": "navigation"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Burrow Settings",
+      "properties": {
+        "burrow.backendUrl": {
+          "type": "string",
+          "default": "http://localhost:8000",
+          "description": "Base URL of the Burrow FastAPI backend API."
+        },
+        "burrow.autoStartBackend": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically spawn and manage the lifecycle of the Python FastAPI backend."
+        },
+        "burrow.pythonPath": {
+          "type": "string",
+          "default": "python",
+          "description": "Path or command name for the Python executable (e.g. python, python3, .venv/bin/python)."
+        },
+        "burrow.logLevel": {
+          "type": "string",
+          "default": "INFO",
+          "enum": [
+            "DEBUG",
+            "INFO",
+            "WARNING",
+            "ERROR"
+          ],
+          "description": "Logging level for the background FastAPI backend server."
+        }
+      }
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.89.0",
+    "typescript": "^5.3.3"
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  }
+}
