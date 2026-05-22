@@ -89,7 +89,7 @@ def display_analysis_result(result: AnalysisResult):
     # Display Workspace Banner if workspace context is present
     if result.workspace_context:
         ws = result.workspace_context
-        fw_list = ", ".join(ws.structure.detected_frameworks) or "None detected"
+        fw_list = ", ".join(ws.structure.detected_frameworks or []) or "None detected"
         branch_info = ""
         changes_info = ""
         if ws.git:

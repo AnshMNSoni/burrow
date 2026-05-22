@@ -3,6 +3,7 @@ import re
 import subprocess
 import json
 import tomllib  # Python 3.11 standard library
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Tuple, Optional, Set
 
@@ -21,11 +22,15 @@ from burrow.workspace.models import (
 )
 from burrow.utils.logging import logger
 
-# Initialize Tree-sitter languages
-PY_LANGUAGE = Language(tspython.language())
-JS_LANGUAGE = Language(tsjs.language())
-TS_LANGUAGE = Language(tstypescript.language_typescript())
-TSX_LANGUAGE = Language(tstypescript.language_tsx())
+# Module-level Tree-sitter language objects (immutable, safe to share)
+_PY_LANGUAGE = Language(tspython.language())
+_JS_LANGUAGE = Language(tsjs.language())
+_TS_LANGUAGE = Language(tstypescript.language_typescript())
+_TSX_LANGUAGE = Language(tstypescript.language_tsx())
+
+# Git subprocess timeout (seconds) — prevents hangs on slow remotes / large histories
+_GIT_TIMEOUT = 5
+
 
 class WorkspaceScanner:
     """Recursively scans project repository layout, tracks Git context, and parses code files using Tree-sitter."""
@@ -33,6 +38,12 @@ class WorkspaceScanner:
     def __init__(self, project_root: Path, max_files_to_parse: int = 300):
         self.project_root = Path(project_root).resolve()
         self.max_files_to_parse = max_files_to_parse
+
+        # Instance-level parsers — created once, reused for all files
+        self._py_parser = Parser(_PY_LANGUAGE)
+        self._js_parser = Parser(_JS_LANGUAGE)
+        self._ts_parser = Parser(_TS_LANGUAGE)
+        self._tsx_parser = Parser(_TSX_LANGUAGE)
 
     def scan(self) -> WorkspaceContext:
         """Runs the complete static analysis scan of the repository."""
@@ -209,58 +220,59 @@ class WorkspaceScanner:
         except Exception as e:
             logger.debug(f"Failed to parse pyproject.toml {path}: {e}")
 
-    def _map_imports(self, structure: WorkspaceStructure) -> List[ImportRelation]:
-        import_relations: List[ImportRelation] = []
-        parsed_count = 0
+    def _parse_file_imports(self, path: Path) -> List[ImportRelation]:
+        """Parses a single file and returns its import relations. Designed to run in a thread."""
+        rel_path_str = str(path.relative_to(self.project_root).as_posix())
+        ext = path.suffix.lower()
+        relations: List[ImportRelation] = []
+        try:
+            with open(path, "rb") as f:
+                code_bytes = f.read()
+            if ext == ".py":
+                tree = self._py_parser.parse(code_bytes)
+                self._walk_python_imports(tree.root_node, code_bytes, rel_path_str, relations)
+            elif ext in (".js", ".jsx"):
+                tree = self._js_parser.parse(code_bytes)
+                self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, relations)
+            elif ext == ".ts":
+                tree = self._ts_parser.parse(code_bytes)
+                self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, relations)
+            elif ext == ".tsx":
+                tree = self._tsx_parser.parse(code_bytes)
+                self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, relations)
+        except Exception as e:
+            logger.debug(f"Failed to parse imports for file {path}: {e}")
+        return relations
 
+    def _map_imports(self, structure: WorkspaceStructure) -> List[ImportRelation]:
+        """Collects import relations across all source files using a thread pool."""
         exclude_dirs = {
-            ".git", "node_modules", "venv", ".venv", "dist", "build", 
+            ".git", "node_modules", "venv", ".venv", "dist", "build",
             ".next", ".pytest_cache", "__pycache__"
         }
 
-        # Initialize parsers
-        py_parser = Parser(PY_LANGUAGE)
-        js_parser = Parser(JS_LANGUAGE)
-        ts_parser = Parser(TS_LANGUAGE)
-        tsx_parser = Parser(TSX_LANGUAGE)
-
+        # Collect eligible files up to the cap
+        source_files: List[Path] = []
         for root, dirs, files in os.walk(self.project_root):
             dirs[:] = [d for d in dirs if d not in exclude_dirs]
-            
             for file in files:
-                if parsed_count >= self.max_files_to_parse:
+                if len(source_files) >= self.max_files_to_parse:
                     break
-                
-                path = Path(root) / file
-                ext = path.suffix.lower()
-                
-                if ext not in (".py", ".js", ".jsx", ".ts", ".tsx"):
-                    continue
+                p = Path(root) / file
+                if p.suffix.lower() in (".py", ".js", ".jsx", ".ts", ".tsx"):
+                    source_files.append(p)
+            if len(source_files) >= self.max_files_to_parse:
+                break
 
-                rel_path = path.relative_to(self.project_root)
-                rel_path_str = str(rel_path.as_posix())
-                
+        import_relations: List[ImportRelation] = []
+        max_workers = min(8, os.cpu_count() or 4)
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(self._parse_file_imports, p): p for p in source_files}
+            for future in as_completed(futures):
                 try:
-                    with open(path, "rb") as f:
-                        code_bytes = f.read()
-
-                    # Select parser
-                    if ext == ".py":
-                        tree = py_parser.parse(code_bytes)
-                        self._walk_python_imports(tree.root_node, code_bytes, rel_path_str, import_relations)
-                    elif ext in (".js", ".jsx"):
-                        tree = js_parser.parse(code_bytes)
-                        self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, import_relations)
-                    elif ext == ".ts":
-                        tree = ts_parser.parse(code_bytes)
-                        self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, import_relations)
-                    elif ext == ".tsx":
-                        tree = tsx_parser.parse(code_bytes)
-                        self._walk_js_imports(tree.root_node, code_bytes, rel_path_str, import_relations)
-
-                    parsed_count += 1
+                    import_relations.extend(future.result())
                 except Exception as e:
-                    logger.debug(f"Failed to parse imports for file {path}: {e}")
+                    logger.debug(f"Import parse worker error: {e}")
 
         return import_relations
 
@@ -349,80 +361,72 @@ class WorkspaceScanner:
                 inferred.add("express")
         return inferred
 
+    def _run_git(self, args: List[str]) -> Optional[str]:
+        """Runs a git command with a bounded timeout. Returns stdout or None on failure."""
+        try:
+            result = subprocess.run(
+                ["git"] + args,
+                cwd=self.project_root,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=_GIT_TIMEOUT
+            )
+            return result.stdout
+        except subprocess.TimeoutExpired:
+            logger.debug(f"git {' '.join(args)} timed out after {_GIT_TIMEOUT}s — skipping.")
+            return None
+        except subprocess.CalledProcessError as e:
+            logger.debug(f"git {' '.join(args)} failed: {e.stderr.strip()}")
+            return None
+        except Exception as e:
+            logger.debug(f"git {' '.join(args)} error: {e}")
+            return None
+
     def _extract_git_context(self) -> Optional[GitContext]:
-        # Check if project root is a git repository
+        """Extracts branch, file status, recent history, and current diff from git."""
         if not (self.project_root / ".git").exists():
             return None
 
         try:
-            # Check active branch
-            branch_run = subprocess.run(
-                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                cwd=self.project_root, capture_output=True, text=True, check=True
-            )
-            branch = branch_run.stdout.strip()
-            
-            # Check git status (unstaged changes)
-            status_run = subprocess.run(
-                ["git", "status", "--porcelain", "-u"],
-                cwd=self.project_root, capture_output=True, text=True, check=True
-            )
-            
+            branch_out = self._run_git(["rev-parse", "--abbrev-ref", "HEAD"])
+            if branch_out is None:
+                return None
+            branch = branch_out.strip()
+
+            status_out = self._run_git(["status", "--porcelain", "-u"])
             recent_changes: List[GitFileStatus] = []
-            seen_files = set()
-            
-            status_lines = status_run.stdout.splitlines()
-            for line in status_lines:
+            seen_files: Set[str] = set()
+
+            for line in (status_out or "").splitlines():
                 if not line or len(line) < 4:
                     continue
                 state = line[:2].strip()
                 filepath = line[3:].strip()
-                
-                # Handle renames e.g. "R  old.py -> new.py"
                 if " -> " in filepath:
                     filepath = filepath.split(" -> ")[-1].strip()
-                
-                status_desc = "modified"
-                if "M" in state:
-                    status_desc = "modified"
-                elif "?" in state:
-                    status_desc = "untracked"
-                elif "A" in state:
-                    status_desc = "added"
-                elif "D" in state:
-                    status_desc = "deleted"
-                
-                recent_changes.append(GitFileStatus(
-                    file_path=filepath,
-                    status=status_desc
-                ))
+                status_desc = (
+                    "modified" if "M" in state else
+                    "untracked" if "?" in state else
+                    "added" if "A" in state else
+                    "deleted" if "D" in state else "modified"
+                )
+                recent_changes.append(GitFileStatus(file_path=filepath, status=status_desc))
                 seen_files.add(filepath)
 
-            # Check last 10 changed files in Git history to provide historical recently modified files
-            log_run = subprocess.run(
-                ["git", "log", "-n", "10", "--name-only", "--pretty=format:"],
-                cwd=self.project_root, capture_output=True, text=True, check=True
-            )
-            log_files = [f.strip() for f in log_run.stdout.splitlines() if f.strip()]
-            for lf in log_files:
-                if lf not in seen_files:
-                    # Check if file exists to avoid deleted files in log
-                    if (self.project_root / lf).exists():
-                        recent_changes.append(GitFileStatus(
-                            file_path=lf,
-                            status="committed"
-                        ))
-                        seen_files.add(lf)
+            # Cap history at 20 commits to keep git log fast
+            log_out = self._run_git(["log", "--max-count=20", "--name-only", "--pretty=format:"])
+            for lf in (log_out or "").splitlines():
+                lf = lf.strip()
+                if lf and lf not in seen_files and (self.project_root / lf).exists():
+                    recent_changes.append(GitFileStatus(file_path=lf, status="committed"))
+                    seen_files.add(lf)
 
-            # Get current unsaved git diff (cap at 2000 chars)
-            diff_run = subprocess.run(
-                ["git", "diff"],
-                cwd=self.project_root, capture_output=True, text=True, check=True
-            )
-            diff = diff_run.stdout
-            if len(diff) > 2000:
-                diff = diff[:2000] + "\n... (diff truncated for size) ..."
-                
+            diff_out = self._run_git(["diff"])
+            diff = (diff_out or "")[:2000]
+            if len(diff_out or "") > 2000:
+                diff += "\n... (diff truncated for size) ..."
+
             return GitContext(
                 active_branch=branch,
                 recent_changes=recent_changes,

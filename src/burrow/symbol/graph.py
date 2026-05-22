@@ -70,9 +70,10 @@ def resolve_module_to_file(importing_file: str, module_path: str, is_relative: b
 
 
 class SymbolGraphBuilder:
-    def __init__(self, project_root: Path, max_files_to_parse: int = 300):
+    def __init__(self, project_root: Path, max_files_to_parse: int = 300, max_nodes: int = 5000):
         self.project_root = Path(project_root).resolve()
         self.max_files_to_parse = max_files_to_parse
+        self.max_nodes = max_nodes
         self.g = nx.DiGraph()
         
         # Maps file path -> ExtractedFileInfo
@@ -109,6 +110,12 @@ class SymbolGraphBuilder:
                 
         # Extract AST info for all files
         for f in source_files:
+            if self.g.number_of_nodes() >= self.max_nodes:
+                logger.warning(
+                    f"Symbol graph node cap ({self.max_nodes}) reached after {len(self.file_info_map)} files. "
+                    "Remaining files skipped. Raise BURROW_MAX_GRAPH_NODES to index more."
+                )
+                break
             info = extract_symbols(f, self.project_root)
             if info:
                 self.file_info_map[info.file_path] = info

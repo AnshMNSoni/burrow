@@ -11,11 +11,18 @@ import tree_sitter_typescript as tstypescript
 from burrow.symbol.models import SymbolDetail, SymbolType, CallSiteDetail
 from burrow.utils.logging import logger
 
-# Initialize Tree-sitter languages (reused from scanner or redefined here)
-PY_LANGUAGE = Language(tspython.language())
-JS_LANGUAGE = Language(tsjs.language())
-TS_LANGUAGE = Language(tstypescript.language_typescript())
-TSX_LANGUAGE = Language(tstypescript.language_tsx())
+# Module-level Tree-sitter parsers — created once per process, reused for every file.
+# Tree-sitter Parser objects are NOT thread-safe; callers must ensure single-threaded
+# use per parser instance or create per-thread copies.
+_PY_LANGUAGE = Language(tspython.language())
+_JS_LANGUAGE = Language(tsjs.language())
+_TS_LANGUAGE = Language(tstypescript.language_typescript())
+_TSX_LANGUAGE = Language(tstypescript.language_tsx())
+
+_PY_PARSER = Parser(_PY_LANGUAGE)
+_JS_PARSER = Parser(_JS_LANGUAGE)
+_TS_PARSER = Parser(_TS_LANGUAGE)
+_TSX_PARSER = Parser(_TSX_LANGUAGE)
 
 class ImportBinding(BaseModel):
     local_name: str
@@ -790,29 +797,23 @@ def extract_symbols(file_path: Path, project_root: Path) -> Optional[ExtractedFi
         with open(abs_path, "rb") as f:
             code_bytes = f.read()
 
-        # Parse with Tree-sitter
-        py_parser = Parser(PY_LANGUAGE)
-        js_parser = Parser(JS_LANGUAGE)
-        ts_parser = Parser(TS_LANGUAGE)
-        tsx_parser = Parser(TSX_LANGUAGE)
-
+        # Reuse module-level parsers (single-threaded caller assumed)
         if ext == ".py":
-            tree = py_parser.parse(code_bytes)
+            tree = _PY_PARSER.parse(code_bytes)
             walker = PythonWalker(code_bytes, rel_path)
         elif ext in (".js", ".jsx"):
-            tree = js_parser.parse(code_bytes)
+            tree = _JS_PARSER.parse(code_bytes)
             walker = JavaScriptWalker(code_bytes, rel_path)
         elif ext == ".ts":
-            tree = ts_parser.parse(code_bytes)
+            tree = _TS_PARSER.parse(code_bytes)
             walker = JavaScriptWalker(code_bytes, rel_path)
         elif ext == ".tsx":
-            tree = tsx_parser.parse(code_bytes)
+            tree = _TSX_PARSER.parse(code_bytes)
             walker = JavaScriptWalker(code_bytes, rel_path)
         else:
             return None
 
         walker.walk(tree.root_node)
-
         return ExtractedFileInfo(
             file_path=rel_path,
             symbols=walker.symbols,
@@ -823,5 +824,5 @@ def extract_symbols(file_path: Path, project_root: Path) -> Optional[ExtractedFi
             local_defs=walker.local_defs
         )
     except Exception as e:
-        logger.error(f"Failed to parse and extract symbols for {file_path}: {e}")
+        logger.debug(f"Failed to extract symbols from {file_path}: {e}")
         return None

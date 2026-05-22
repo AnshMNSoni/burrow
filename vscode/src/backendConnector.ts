@@ -9,6 +9,8 @@ export class BackendConnector {
     private stateManager: StateManager;
     private backendProcess: child_process.ChildProcess | null = null;
     private outputChannel: vscode.OutputChannel;
+    /** True once the backend has passed at least one health check. */
+    public isReady: boolean = false;
 
     constructor(stateManager: StateManager) {
         this.stateManager = stateManager;
@@ -105,11 +107,13 @@ export class BackendConnector {
                 if (healthy) {
                     this.outputChannel.appendLine('Burrow backend started and verified healthy.');
                     vscode.window.showInformationMessage('Burrow backend service is running.');
+                    this.isReady = true;
                     return true;
                 }
             }
 
             vscode.window.showWarningMessage('Burrow backend spawned but health checks are failing. Check the Burrow Backend output channel.');
+            this.isReady = false;
             return false;
         } catch (err: any) {
             this.outputChannel.appendLine(`Failed to start backend: ${err.message}`);
